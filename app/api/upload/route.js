@@ -1,8 +1,8 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { CHUNKING_STRATEGY, chunkPages } from "@/lib/chunking";
-import { MAX_FILE_BYTES } from "@/lib/config";
-import { loadDocument } from "@/lib/document";
+import { MAX_CHUNKS_PER_DOCUMENT, MAX_FILE_BYTES } from "@/lib/config";
+import { assessDocumentQuality, loadDocument } from "@/lib/document";
 import { embedTexts } from "@/lib/openai";
 import { ensureCollection, upsertChunks } from "@/lib/qdrant";
 
@@ -33,6 +33,17 @@ export async function POST(request) {
       fileName: file.name,
       mimeType: file.type
     });
+    const quality = assessDocumentQuality(pages);
+
+    if (!quality.passed) {
+      return NextResponse.json(
+        {
+          error: quality.errors.join(" "),
+          quality
+        },
+        { status: 422 }
+      );
+    }
 
     const chunks = chunkPages(pages, file.name);
 
@@ -40,6 +51,15 @@ export async function POST(request) {
       return NextResponse.json(
         { error: "No readable text was found in the uploaded document." },
         { status: 422 }
+      );
+    }
+
+    if (chunks.length > MAX_CHUNKS_PER_DOCUMENT) {
+      return NextResponse.json(
+        {
+          error: `This document produced ${chunks.length} chunks, which is above the ${MAX_CHUNKS_PER_DOCUMENT} chunk indexing limit. Split the file or raise MAX_CHUNKS_PER_DOCUMENT.`
+        },
+        { status: 413 }
       );
     }
 
@@ -59,7 +79,8 @@ export async function POST(request) {
       fileName: file.name,
       pageCount: pages.length,
       chunkCount: chunks.length,
-      chunking: CHUNKING_STRATEGY
+      chunking: CHUNKING_STRATEGY,
+      quality
     });
   } catch (error) {
     console.error(error);

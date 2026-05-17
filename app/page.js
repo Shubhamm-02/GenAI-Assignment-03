@@ -5,10 +5,13 @@ import {
   CheckCircle2,
   Database,
   FileText,
+  Gauge,
+  GitBranch,
   Loader2,
   MessageSquareText,
   Search,
   Send,
+  ShieldCheck,
   UploadCloud
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -22,7 +25,27 @@ const starterMessages = [
 ];
 
 function formatScore(score) {
+  if (typeof score !== "number") {
+    return "n/a";
+  }
+
   return `${Math.round(score * 100)}%`;
+}
+
+function sourceLocation(source) {
+  if (source.sectionType === "csv-schema") {
+    return "CSV schema";
+  }
+
+  if (source.sectionType === "csv-rows" && source.rowStart && source.rowEnd) {
+    return `Rows ${source.rowStart}-${source.rowEnd}`;
+  }
+
+  if (source.pageNumber) {
+    return `Page ${source.pageNumber}`;
+  }
+
+  return "Text";
 }
 
 export default function Home() {
@@ -77,12 +100,13 @@ export default function Home() {
       }
 
       setDocumentInfo(data);
-      setStatus("Ready");
+      setStatus(data.quality?.warnings?.length ? "Ready with warnings" : "Ready");
       setMessages([
         {
           role: "assistant",
-          content: `${data.fileName} is indexed into ${data.chunkCount} chunks.`,
-          sources: []
+          content: `${data.fileName} is indexed into ${data.chunkCount} chunks with a quality score of ${data.quality?.metrics?.qualityScore ?? "n/a"}.`,
+          sources: [],
+          pipeline: null
         }
       ]);
     } catch (uploadError) {
@@ -132,7 +156,8 @@ export default function Home() {
         {
           role: "assistant",
           content: data.answer,
-          sources: data.sources || []
+          sources: data.sources || [],
+          pipeline: data.pipeline || null
         }
       ]);
     } catch (questionError) {
@@ -238,6 +263,10 @@ export default function Home() {
                 <dd>{documentInfo.chunkCount}</dd>
               </div>
               <div>
+                <dt>Quality</dt>
+                <dd>{documentInfo.quality?.metrics?.qualityScore ?? "n/a"}</dd>
+              </div>
+              <div>
                 <dt>Strategy</dt>
                 <dd>{documentInfo.chunking?.name}</dd>
               </div>
@@ -246,6 +275,34 @@ export default function Home() {
             <p className="muted-text">No document indexed</p>
           )}
         </div>
+
+        {documentInfo?.quality && (
+          <div className="quality-panel">
+            <div className="panel-title">
+              <Gauge aria-hidden="true" size={18} />
+              <span>Quality gate</span>
+            </div>
+            <dl className="metrics compact">
+              <div>
+                <dt>Words</dt>
+                <dd>{documentInfo.quality.metrics.wordCount}</dd>
+              </div>
+              <div>
+                <dt>Readable pages</dt>
+                <dd>{documentInfo.quality.metrics.readablePages}</dd>
+              </div>
+            </dl>
+            {documentInfo.quality.warnings.length > 0 ? (
+              <ul className="warning-list">
+                {documentInfo.quality.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted-text">Passed without warnings</p>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="chat-panel" aria-label="Document chat">
@@ -255,8 +312,8 @@ export default function Home() {
             <h2>{documentInfo?.fileName || "Waiting for a document"}</h2>
           </div>
           <div className="retrieval-chip">
-            <Search aria-hidden="true" size={15} />
-            Top-k retrieval
+            <GitBranch aria-hidden="true" size={15} />
+            Advanced RAG
           </div>
         </div>
 
@@ -267,15 +324,57 @@ export default function Home() {
               key={`${message.role}-${index}`}
             >
               <p>{message.content}</p>
+              {message.pipeline && (
+                <div className="pipeline-trace">
+                  <div className="trace-row">
+                    <Search aria-hidden="true" size={15} />
+                    <span>Rewrite</span>
+                    <strong>
+                      {message.pipeline.queryTranslation.rewrittenQuestion}
+                    </strong>
+                  </div>
+                  <div className="trace-row">
+                    <ShieldCheck aria-hidden="true" size={15} />
+                    <span>Judge</span>
+                    <strong>
+                      {message.pipeline.judge.sufficient
+                        ? "Sufficient"
+                        : "Needs caution"}
+                    </strong>
+                  </div>
+                  <div className="trace-meta">
+                    <span>
+                      {message.pipeline.retrieval.candidateCount} candidates
+                    </span>
+                    <span>
+                      {message.pipeline.retrieval.selectedCount} selected
+                    </span>
+                    <span>
+                      {message.pipeline.retrieval.embeddingCache.hits} cache hits
+                    </span>
+                  </div>
+                  {message.pipeline.queryTranslation.typoFixes.length > 0 && (
+                    <div className="fix-list">
+                      {message.pipeline.queryTranslation.typoFixes.map((fix) => (
+                        <span key={`${fix.from}-${fix.to}`}>
+                          {fix.from} -&gt; {fix.to}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {message.sources.length > 0 && (
                 <div className="sources">
                   {message.sources.map((source) => (
                     <details key={`${source.id}-${source.score}`}>
                       <summary>
-                        [{source.id}]{" "}
-                        {source.pageNumber ? `Page ${source.pageNumber}` : "Text"} ·{" "}
-                        {formatScore(source.score)}
+                        [{source.id}] {sourceLocation(source)} ·{" "}
+                        {formatScore(source.judgeScore ?? source.score)}
                       </summary>
+                      {source.judgeReason && (
+                        <p className="judge-note">{source.judgeReason}</p>
+                      )}
                       <p>{source.text}</p>
                     </details>
                   ))}
